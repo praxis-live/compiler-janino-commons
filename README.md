@@ -1,8 +1,8 @@
 Janino commons javac API
 ========================
 
-This is a repackaged version of the [Janino](http://docs.codehaus.org/display/JANINO/Home) compiler interface for the
-javax.tools interface adapted to work with the refactored javac (v7) compiler at
+This is a repackaged version of the [Janino](http://docs.codehaus.org/display/JANINO/Home) compiler interface for
+javax.tools adapted to work with the refactored javac (v7) compiler at
 https://github.com/praxis-live/compiler-javac7
 
 This code is refactored to allow Janino to compile and run Java code fragments on the fly using the full OpenJDK 7
