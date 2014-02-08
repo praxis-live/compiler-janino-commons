@@ -34,7 +34,10 @@ public
 class CompilerFactory extends AbstractCompilerFactory {
 
     @Override public String
-    getId() { return "org.codehaus.commons.compiler.jdk"; }
+    getId() { return "org.praxislive.compiler"; }
+
+    @Override public String
+    toString() { return getId(); }
 
     @Override public String
     getImplementationVersion() { return CompilerFactory.class.getPackage().getImplementationVersion(); }

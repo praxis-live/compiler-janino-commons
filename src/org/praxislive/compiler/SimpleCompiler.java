@@ -34,25 +34,27 @@ import java.util.*;
 
 import javax.tools.*;
 import javax.tools.JavaFileObject.Kind;
-import org.praxislive.compiler.tools.javac.api.JavacTool;
 
 import org.codehaus.commons.compiler.*;
+import org.praxislive.compiler.tools.javac.api.JavacTool;
 
 public
 class SimpleCompiler extends Cookable implements ISimpleCompiler {
 
-    private ClassLoader parentClassLoader = Thread.currentThread().getContextClassLoader();
-    private ClassLoader result;
-    private boolean     debugSource;
-    private boolean     debugLines;
-    private boolean     debugVars;
+    private ClassLoader    parentClassLoader = Thread.currentThread().getContextClassLoader();
+    private ClassLoader    result;
+    private boolean        debugSource;
+    private boolean        debugLines;
+    private boolean        debugVars;
+    private ErrorHandler   optionalCompileErrorHandler;
+    private WarningHandler optionalWarningHandler;
 
     @Override public ClassLoader
-    getClassLoader() { assertCooked(); return this.result; }
+    getClassLoader() { this.assertCooked(); return this.result; }
 
     @Override public void
     cook(String optionalFileName, final Reader r) throws CompileException, IOException {
-        assertNotCooked();
+        this.assertNotCooked();
 
         // Create one Java source file in memory, which will be compiled later.
         JavaFileObject compilationUnit;
@@ -75,6 +77,9 @@ class SimpleCompiler extends Cookable implements ISimpleCompiler {
                 getCharContent(boolean ignoreEncodingErrors) throws IOException {
                     return readString(this.openReader(ignoreEncodingErrors));
                 }
+
+                @Override public String
+                toString() { return String.valueOf(this.uri); }
             };
         }
 
@@ -96,6 +101,7 @@ class SimpleCompiler extends Cookable implements ISimpleCompiler {
 
         // Run the compiler.
         try {
+            final CompileException[] caughtCompileException = new CompileException[1];
             if (!compiler.getTask(
                 null,                                      // out
                 fileManager,                               // fileManager
@@ -103,19 +109,40 @@ class SimpleCompiler extends Cookable implements ISimpleCompiler {
 
                     @Override public void
                     report(Diagnostic<? extends JavaFileObject> diagnostic) {
-//System.err.println("*** " + diagnostic.toString() + " *** " + diagnostic.getCode());
 
                         Location loc = new Location(
-                            diagnostic.getSource().toString(),
+                            null,
                             (short) diagnostic.getLineNumber(),
                             (short) diagnostic.getColumnNumber()
                         );
-                        String code    = diagnostic.getCode();
-                        String message = diagnostic.getMessage(null) + " (" + code + ")";
+                        String message = diagnostic.getMessage(null) + " (" + diagnostic.getCode() + ")";
 
-                        // Wrap the exception in a RuntimeException, because "report()" does not declare checked
-                        // exceptions.
-                        throw new RuntimeException(new CompileException(message, loc));
+                        try {
+                            switch (diagnostic.getKind()) {
+                            case ERROR:
+                                if (SimpleCompiler.this.optionalCompileErrorHandler == null) {
+                                    throw new CompileException(message, loc);
+                                } else {
+                                    SimpleCompiler.this.optionalCompileErrorHandler.handleError(message, loc);
+                                }
+                                break;
+                            case MANDATORY_WARNING:
+                            case WARNING:
+                                if (SimpleCompiler.this.optionalWarningHandler == null) {
+                                    ;
+                                } else {
+                                    SimpleCompiler.this.optionalWarningHandler.handleWarning(null, message, loc);
+                                }
+                                break;
+                            case NOTE:
+                            case OTHER:
+                            default:
+                                break;
+
+                            }
+                        } catch (CompileException ce) {
+                            if (caughtCompileException[0] == null) caughtCompileException[0] = ce;
+                        }
                     }
                 },
                 Collections.singletonList(                 // options
@@ -130,93 +157,18 @@ class SimpleCompiler extends Cookable implements ISimpleCompiler {
                 null,                                      // classes
                 Collections.singleton(compilationUnit)     // compilationUnits
             ).call()) {
+                if (caughtCompileException[0] != null) throw caughtCompileException[0];
                 throw new CompileException("Compilation failed", null);
             }
         } catch (RuntimeException rte) {
 
             // Unwrap the compilation exception and throw it.
-            Throwable cause = rte.getCause();
-            if (cause != null) {
-                cause = cause.getCause();
-                if (cause instanceof CompileException) {
-                    throw (CompileException) cause; // SUPPRESS CHECKSTYLE AvoidHidingCause
+            for (Throwable t = rte.getCause(); t != null; t = t.getCause()) {
+                if (t instanceof CompileException) {
+                    throw (CompileException) t; // SUPPRESS CHECKSTYLE AvoidHidingCause
                 }
-                if (cause instanceof IOException) {
-                    throw (IOException) cause; // SUPPRESS CHECKSTYLE AvoidHidingCause
-                }
-            }
-            throw rte;
-        }
-
-        // Create a ClassLoader that reads class files from our FM.
-        this.result = AccessController.doPrivileged(new PrivilegedAction<JavaFileManagerClassLoader>() {
-
-            @Override public JavaFileManagerClassLoader
-            run() { return new JavaFileManagerClassLoader(fileManager, SimpleCompiler.this.parentClassLoader); }
-        });
-    }
-
-    protected void
-    cook(JavaFileObject compilationUnit) throws CompileException, IOException {
-
-        // Find the JDK Java compiler.
-        JavaCompiler compiler = JavacTool.create();
-        if (compiler == null) {
-            throw new CompileException(
-                "JDK Java compiler not available - probably you're running a JRE, not a JDK",
-                null
-            );
-        }
-
-        // Get the original FM, which reads class files through this JVM's BOOTCLASSPATH and
-        // CLASSPATH.
-        final JavaFileManager fm = compiler.getStandardFileManager(null, null, null);
-
-        // Wrap it so that the output files (in our case class files) are stored in memory rather
-        // than in files.
-        final JavaFileManager fileManager = new ByteArrayJavaFileManager<JavaFileManager>(fm);
-
-        // Run the compiler.
-        try {
-            if (!compiler.getTask(
-                null,                                  // out
-                fileManager,                           // fileManager
-                new DiagnosticListener<JavaFileObject>() { // diagnosticListener
-
-                    @Override public void
-                    report(Diagnostic<? extends JavaFileObject> diagnostic) {
-                        System.err.println("*** " + diagnostic.toString() + " *** " + diagnostic.getCode());
-
-                        Location loc = new Location(
-                            diagnostic.getSource().toString(),
-                            (short) diagnostic.getLineNumber(),
-                            (short) diagnostic.getColumnNumber()
-                        );
-                        String code    = diagnostic.getCode();
-                        String message = diagnostic.getMessage(null) + " (" + code + ")";
-
-                        // Wrap the exception in a RuntimeException, because "report()" does not declare checked
-                        // exceptions.
-                        throw new RuntimeException(new CompileException(message, loc));
-                    }
-                },
-                null,                                  // options
-                null,                                  // classes
-                Collections.singleton(compilationUnit) // compilationUnits
-            ).call()) {
-                throw new CompileException("Compilation failed", null);
-            }
-        } catch (RuntimeException rte) {
-
-            // Unwrap the compilation exception and throw it.
-            Throwable cause = rte.getCause();
-            if (cause != null) {
-                cause = cause.getCause();
-                if (cause instanceof CompileException) {
-                    throw (CompileException) cause; // SUPPRESS CHECKSTYLE AvoidHidingCause
-                }
-                if (cause instanceof IOException) {
-                    throw (IOException) cause; // SUPPRESS CHECKSTYLE AvoidHidingCause
+                if (t instanceof IOException) {
+                    throw (IOException) t; // SUPPRESS CHECKSTYLE AvoidHidingCause
                 }
             }
             throw rte;
@@ -239,7 +191,7 @@ class SimpleCompiler extends Cookable implements ISimpleCompiler {
 
     @Override public void
     setParentClassLoader(ClassLoader optionalParentClassLoader) {
-        assertNotCooked();
+        this.assertNotCooked();
         this.parentClassLoader = (
             optionalParentClassLoader != null
             ? optionalParentClassLoader
@@ -247,27 +199,27 @@ class SimpleCompiler extends Cookable implements ISimpleCompiler {
         );
     }
 
-    /**
-     * Auxiliary classes never really worked... don't use them.
-     *
-     * @param optionalParentClassLoader
-     * @param auxiliaryClasses
-     * @deprecated
-     */
+    /** @deprecated Auxiliary classes never really worked... don't use them. */
     @Deprecated public void
     setParentClassLoader(ClassLoader optionalParentClassLoader, Class<?>[] auxiliaryClasses) {
         this.setParentClassLoader(optionalParentClassLoader);
     }
 
-    /**
-     * Throw an {@link IllegalStateException} if this {@link Cookable} is not yet cooked.
-     */
+    @Override public void
+    setCompileErrorHandler(ErrorHandler optionalCompileErrorHandler) {
+        this.optionalCompileErrorHandler = optionalCompileErrorHandler;
+    }
+
+    @Override public void
+    setWarningHandler(WarningHandler optionalWarningHandler) {
+        this.optionalWarningHandler = optionalWarningHandler;
+    }
+
+    /** Throw an {@link IllegalStateException} if this {@link Cookable} is not yet cooked. */
     protected void
     assertCooked() { if (this.result == null) throw new IllegalStateException("Not yet cooked"); }
 
-    /**
-     * Throw an {@link IllegalStateException} if this {@link Cookable} is already cooked.
-     */
+    /** Throw an {@link IllegalStateException} if this {@link Cookable} is already cooked. */
     protected void
     assertNotCooked() { if (this.result != null) throw new IllegalStateException("Already cooked"); }
 }
